@@ -1,0 +1,69 @@
+name: scrape
+
+on:
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: "Also fetch opening hours (slow)"
+        type: boolean
+        default: true
+      round:
+        description: "Chain counter (set automatically)"
+        default: "0"
+  schedule:
+    - cron: "23 3 * * *"   # daily safety net; exits in a minute when everything is done
+
+concurrency:
+  group: scrape
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # release with the data
+  actions: write    # lets a run start the next one
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355   # GitHub hard limit is 360
+    env:
+      GH_TOKEN: ${{ github.token }}
+      WANT_HOURS: ${{ github.event_name != 'workflow_dispatch' || inputs.hours }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Restore data (release "data")
+        run: gh release download data -p iran_food.db || echo "no saved data yet - starting fresh"
+
+      - name: Connectivity test (Balad + Neshan from this runner)
+        run: python iran_food_scraper.py --smoke
+
+      - name: Scrape
+        run: |
+          if [ "$WANT_HOURS" = "true" ]; then H="--hours"; else H=""; fi
+          python iran_food_scraper.py --max-minutes 300 $H
+
+      - name: Save data
+        if: always()
+        run: |
+          [ -f iran_food.db ] || exit 0
+          gh release view data >/dev/null 2>&1 || gh release create data --title "data" --notes "Scraper state and the Excel file (updated automatically)"
+          FILES="iran_food.db"
+          [ -f iran_food_directory.xlsx ] && FILES="$FILES iran_food_directory.xlsx"
+          [ -f errors.log ] && FILES="$FILES errors.log"
+          gh release upload data $FILES --clobber
+
+      - name: Start the next run if work is left
+        if: success()
+        run: |
+          if [ "$WANT_HOURS" = "true" ]; then H="--hours"; else H=""; fi
+          LEFT=$(python iran_food_scraper.py --status $H)
+          ROUND=${{ inputs.round || 0 }}
+          echo "work left: $LEFT (round $ROUND)"
+          if [ "$LEFT" -gt 0 ] && [ "$ROUND" -lt 12 ]; then
+            gh workflow run scrape.yml -f hours=$WANT_HOURS -f round=$((ROUND + 1))
+          fi

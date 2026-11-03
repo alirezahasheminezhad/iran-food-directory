@@ -1,0 +1,5 @@
+iran_food.db*
+*.xlsx
+*.tmp
+errors.log
+__pycache__/
