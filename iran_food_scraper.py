@@ -12,6 +12,7 @@ Options:
   --retry               give failed jobs / places another chance
   --max-minutes N       stop cleanly after N minutes (used by the GitHub workflow)
   --smoke               one test call per source, exit code 3 if both fail
+  --merge FILE          add the places of another scraper database and mark its finished jobs as done here
   --status              print how much work is left (add --hours to include opening hours)
 Ctrl+C once = stop and save the Excel. Never press it twice or close the window while it says "saving".
 Optional proxies (used by the libraries): set BALAD_MCP_PROXY / NESHAN_MCP_PROXY to an HTTP proxy URL.
@@ -48,7 +49,7 @@ QUERIES = ["حبوبات فروشی", "ادویه فروشی", "medicinal-herbs-
            "پخش مواد غذایی", "عمده فروشی مواد غذایی", "برنج فروشی"]
 NS_QUERIES = ["حبوبات فروشی", "ادویه فروشی", "عطاری", "خشکبار", "پخش مواد غذایی", "عمده فروشی مواد غذایی", "برنج فروشی"]
 STEP_KM, RADIUS_KM, LIMIT, MIN_RADIUS = 4.0, 2.4, 40, 0.3
-BL_DELAY, NS_DELAY = 2.0, 4.0  # seconds between calls, per source (one Balad call = 2-3 HTTP requests)
+BL_DELAY, NS_DELAY = 2.0, 6.0  # seconds between calls, per source (one Balad call = 2-3 HTTP requests)
 WORKERS, MAX_TRIES, PAUSE_S, PAUSE_MAX = 2, 6, 120, 1800  # pause after 4 failures in a row: 2, 4, 8 ... 30 min
 GROUPS = [  # first match wins
     ("حبوبات", ("حبوبات", "بقولات")), ("ادویه", ("ادویه", "ادویه‌جات")),
@@ -279,6 +280,21 @@ async def fetch_hours():
         db.commit()
 
 
+def merge(path):
+    """Take over the work of another database (e.g. a run from another IP): its places, and its finished jobs."""
+    seed(list(CITIES))  # make sure every grid job exists here, so it can be marked done
+    db.commit()
+    db.execute("ATTACH DATABASE ? AS o", (path,))
+    before = db.execute("SELECT COUNT(*) FROM places").fetchone()[0]
+    db.execute("INSERT OR IGNORE INTO places(id,name,cat,grp,city,address,phone,rating,nratings,lat,lng,hours,hours_done) "
+               "SELECT id,name,cat,grp,city,address,phone,rating,nratings,lat,lng,hours,hours_done FROM o.places")
+    db.execute("UPDATE jobs SET done=1 WHERE done=0 AND EXISTS (SELECT 1 FROM o.jobs j WHERE j.done=1 AND "
+               "j.city=jobs.city AND j.lat=jobs.lat AND j.lng=jobs.lng AND j.r=jobs.r AND j.q=jobs.q)")
+    db.commit()
+    after, left = db.execute("SELECT (SELECT COUNT(*) FROM places), (SELECT COUNT(*) FROM jobs WHERE done=0)").fetchone()
+    print(f"merged {path}: places {before} -> {after}, jobs still open: {left}")
+
+
 def export(path="iran_food_directory.xlsx"):
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill
@@ -339,8 +355,12 @@ if __name__ == "__main__":
     ap.add_argument("--retry", action="store_true")
     ap.add_argument("--max-minutes", type=float, default=0)
     ap.add_argument("--smoke", action="store_true")
+    ap.add_argument("--merge", default="")
     ap.add_argument("--status", action="store_true")
     a = ap.parse_args()
+    if a.merge:
+        merge(a.merge)
+        sys.exit(0)
     if a.smoke:
         sys.exit(0 if asyncio.run(smoke()) else 3)
     if a.status:

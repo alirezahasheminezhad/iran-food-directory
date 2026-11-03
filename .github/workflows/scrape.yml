@@ -39,6 +39,9 @@ jobs:
       - name: Restore data (release "data")
         run: gh release download data -p iran_food.db || echo "no saved data yet - starting fresh"
 
+      - name: Merge the earlier run from another IP (adds its places, marks its finished jobs done)
+        run: python iran_food_scraper.py --merge seed/iran_food_local.db
+
       - name: Connectivity test (Balad + Neshan from this runner)
         run: python iran_food_scraper.py --smoke
 
