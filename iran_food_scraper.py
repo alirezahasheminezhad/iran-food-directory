@@ -119,6 +119,10 @@ def save(city, places):
                     p.get("address"), p.get("phone"), p.get("rating"), p.get("ratings", p.get("votes")), p.get("lat"), p.get("lng")))
 
 
+class Stop(Exception):
+    """The time budget (--max-minutes) ends before the next call could start."""
+
+
 class Gate:
     """Pacing for one source: slows down after errors, speeds up on success, pauses when it looks blocked."""
 
@@ -130,6 +134,8 @@ class Gate:
     async def wait(self):
         now = time.monotonic()
         t = max(self.next, self.pause_until, now)
+        if DEADLINE and time.time() + (t - now) > DEADLINE:  # t is on the monotonic clock, DEADLINE on the wall clock
+            raise Stop()
         self.next = t + self.delay  # slot reserved before any await, so workers never share one
         await asyncio.sleep(t - now)
 
@@ -176,6 +182,8 @@ async def run_job(row):
         else:
             d = await call("bl", bl_nearby, what=q, lat=la, lng=ln, radius_km=r, limit=LIMIT)
             res, full = d["places"], len(d["places"]) >= LIMIT or d.get("found", 0) > LIMIT
+    except Stop:
+        return
     except Exception:
         db.execute("UPDATE jobs SET tries=tries+1 WHERE rowid=?", (rid,))
         return
@@ -251,6 +259,8 @@ async def hours_one(row):
         else:
             d = await call("bl", bl_place, id=pid, reviews=0, photos=0)
             txt = "؛ ".join(f"{k}: {v}" for k, v in (d.get("hours") or {}).items()) or (d.get("hours_status") or "")
+    except Stop:
+        return
     except Exception:
         db.execute("UPDATE places SET hours_done=hours_done-1 WHERE id=?", (pid,))  # 0 = todo, 1 = done, -1..-3 = failed
         return
