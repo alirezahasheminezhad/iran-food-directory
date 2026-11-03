@@ -48,7 +48,7 @@ QUERIES = ["حبوبات فروشی", "ادویه فروشی", "medicinal-herbs-
            "پخش مواد غذایی", "عمده فروشی مواد غذایی", "برنج فروشی"]
 NS_QUERIES = ["حبوبات فروشی", "ادویه فروشی", "عطاری", "خشکبار", "پخش مواد غذایی", "عمده فروشی مواد غذایی", "برنج فروشی"]
 STEP_KM, RADIUS_KM, LIMIT, MIN_RADIUS = 4.0, 2.4, 40, 0.3
-BL_DELAY, NS_DELAY = 2.0, 1.5  # seconds between calls, per source (one Balad call = 2-3 HTTP requests)
+BL_DELAY, NS_DELAY = 2.0, 4.0  # seconds between calls, per source (one Balad call = 2-3 HTTP requests)
 WORKERS, MAX_TRIES, PAUSE_S, PAUSE_MAX = 2, 6, 120, 1800  # pause after 4 failures in a row: 2, 4, 8 ... 30 min
 GROUPS = [  # first match wins
     ("حبوبات", ("حبوبات", "بقولات")), ("ادویه", ("ادویه", "ادویه‌جات")),

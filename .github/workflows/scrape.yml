@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       hours:
-        description: "Also fetch opening hours (slow)"
+        description: "Also fetch opening hours (slow, off by default)"
         type: boolean
-        default: true
+        default: false
       round:
         description: "Chain counter (set automatically)"
         default: "0"
@@ -27,7 +27,7 @@ jobs:
     timeout-minutes: 355   # GitHub hard limit is 360
     env:
       GH_TOKEN: ${{ github.token }}
-      WANT_HOURS: ${{ github.event_name != 'workflow_dispatch' || inputs.hours }}
+      WANT_HOURS: ${{ inputs.hours || 'false' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
