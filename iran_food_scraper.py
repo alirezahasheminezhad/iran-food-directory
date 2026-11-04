@@ -17,9 +17,9 @@ Options:
 Ctrl+C once = stop and save the Excel. Never press it twice or close the window while it says "saving".
 Optional proxies (used by the libraries): set BALAD_MCP_PROXY / NESHAN_MCP_PROXY to an HTTP proxy URL.
 """
-import argparse, asyncio, math, os, sqlite3, sys, time
+import argparse, asyncio, json, math, os, sqlite3, sys, time
 
-from balad_mcp.maps import bl_nearby, bl_place
+from balad_mcp.maps import bl_nearby, bl_place, bl_search
 from neshan_mcp.maps import ns_place, ns_search
 
 # city: (lat, lng, half_extent_km)  -- grid covers a square of +-extent around the centre
@@ -74,6 +74,7 @@ db.executescript("""
 CREATE TABLE IF NOT EXISTS jobs(city TEXT, lat REAL, lng REAL, r REAL, q TEXT, done INTEGER DEFAULT 0, PRIMARY KEY(city,lat,lng,r,q));
 CREATE TABLE IF NOT EXISTS places(id TEXT PRIMARY KEY, name TEXT, cat TEXT, grp TEXT, city TEXT, address TEXT, phone TEXT,
   rating REAL, nratings INT, lat REAL, lng REAL, hours TEXT, hours_done INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS towns(name TEXT, ostan TEXT, lat REAL, lng REAL, county TEXT, PRIMARY KEY(name,ostan));
 """)
 try:  # first start of v2 on a v1 database
     db.execute("ALTER TABLE jobs ADD COLUMN tries INTEGER DEFAULT 0")
@@ -106,6 +107,54 @@ def seed(cities):
                 for q in QUERIES + ["ns:" + x for x in NS_QUERIES]:
                     db.execute("INSERT OR IGNORE INTO jobs(city,lat,lng,r,q) VALUES(?,?,?,?,?)",
                                ("تهران", round(35.668 + i * 0.0072, 4), round(51.42 + j * 0.0088, 4), 0.5, q))
+    db.commit()
+
+
+TOWN_Q = QUERIES + ["ns:" + x for x in ("عطاری", "حبوبات فروشی")]  # small towns: Neshan gets 2 queries, it rate-limits hardest
+
+
+def _norm(t):
+    return (t or "").replace("ي", "ی").replace("ك", "ک").replace("\u200c", " ").strip()
+
+
+def todo_towns():
+    here = os.path.dirname(os.path.abspath(__file__))
+    ostan = {o["id"]: o["name"] for o in json.load(open(os.path.join(here, "data/ostan.json"), encoding="utf-8"))}
+    done = {(a, b) for a, b in db.execute("SELECT name,ostan FROM towns")}
+    skip = {_norm(c) for c in CITIES}
+    return [(x["name"], ostan[x["ostan"]]) for x in json.load(open(os.path.join(here, "data/shahr.json"), encoding="utf-8"))
+            if (x["name"], ostan[x["ostan"]]) not in done and _norm(x["name"]) not in skip]
+
+
+async def discover():
+    """Every city of data/shahr.json (1324) that the 60 big-city grids do not already cover -> coordinates via Balad search."""
+    for name, prov in todo_towns():
+        if DEADLINE and time.time() > DEADLINE:
+            return
+        try:
+            rows = (await call("bl", bl_search, query=f"شهر {name} استان {prov}", limit=8))["results"]
+        except Stop:
+            return
+        except Exception:
+            continue  # tried again on the next run
+        hit = next((r for r in rows if r.get("type") == "city" and _norm(name) in _norm(r.get("name"))
+                    and _norm(prov) in _norm(r.get("address"))), None)
+        if hit:
+            county = (hit.get("address") or "").split("شهرستان")[-1].strip()
+            db.execute("INSERT OR IGNORE INTO towns VALUES(?,?,?,?,?)", (name, prov, hit["lat"], hit["lng"], county))
+        else:  # not found: remember with no coordinates so we do not ask again
+            db.execute("INSERT OR IGNORE INTO towns VALUES(?,?,NULL,NULL,NULL)", (name, prov))
+        db.commit()
+
+
+def seed_towns():
+    """One job set per town found, unless it lies inside an already-gridded big city."""
+    big = [(la, ln, e + 1.5) for la, ln, e in CITIES.values()]
+    for name, prov, la, ln in db.execute("SELECT name,ostan,lat,lng FROM towns WHERE lat IS NOT NULL").fetchall():
+        if any(abs(la - a) * 111 < e and abs(ln - b) * 111 * math.cos(math.radians(a)) < e for a, b, e in big):
+            continue
+        for q in TOWN_Q:
+            db.execute("INSERT OR IGNORE INTO jobs(city,lat,lng,r,q) VALUES(?,?,?,?,?)", (name, round(la, 4), round(ln, 4), 3.0, q))
     db.commit()
 
 
@@ -367,7 +416,7 @@ if __name__ == "__main__":
         n = db.execute("SELECT COUNT(*) FROM jobs WHERE done=0 AND tries<?", (MAX_TRIES,)).fetchone()[0]
         if a.hours:
             n += db.execute("SELECT COUNT(*) FROM places WHERE hours_done<=0 AND hours_done>-3 AND grp!='سایر'").fetchone()[0]
-        print(n)
+        print(n + len(todo_towns()))
         sys.exit(0)
     if a.max_minutes:
         DEADLINE = time.time() + a.max_minutes * 60
@@ -381,6 +430,9 @@ if __name__ == "__main__":
         sys.exit(f"unknown city: {bad}") if bad else None
         seed(sel)
         try:
+            if not a.cities:
+                asyncio.run(discover())
+                seed_towns()
             asyncio.run(scrape())
             print("scraping finished - saving Excel...", flush=True)
             export()  # a usable file exists before the slow hours phase starts
