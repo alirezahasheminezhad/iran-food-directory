@@ -430,14 +430,16 @@ if __name__ == "__main__":
         sys.exit(f"unknown city: {bad}") if bad else None
         seed(sel)
         try:
-            if not a.cities:
-                asyncio.run(discover())
-                seed_towns()
-            asyncio.run(scrape())
+            async def phase1():  # one event loop: the libs keep a session bound to the first loop they see
+                if not a.cities:
+                    await discover()
+                    seed_towns()
+                await scrape()
+            asyncio.run(phase1())
             print("scraping finished - saving Excel...", flush=True)
             export()  # a usable file exists before the slow hours phase starts
             if a.hours and not (DEADLINE and time.time() > DEADLINE):
-                asyncio.run(fetch_hours())
+                asyncio.run(fetch_hours())  # shortcut: new loop, reuses a closed Balad session; fix before using --hours
         except KeyboardInterrupt:
             print("stopped - progress is saved.")
         db.commit()
