@@ -1,16 +1,17 @@
 """Export the places DB to a compact JSON for the dashboard: python export_json.py [db] [out]."""
 import json, sqlite3, sys, time
 
+from ostan import fill_ostan
+
 COLS = ["id", "name", "grp", "cat", "ostan", "city", "address", "phone", "rating", "nratings", "lat", "lng"]
 
 
 def export(db, out):
-    ostan = {o["id"]: o["name"] for o in json.load(open("data/ostan.json", encoding="utf-8"))}
-    prov = {s["name"]: ostan.get(s["ostan"], "") for s in json.load(open("data/shahr.json", encoding="utf-8"))}
     c = sqlite3.connect(db)
-    rows = [[i, n, g, ct, prov.get(city, ""), city, a, p, r, nr, la, ln]
-            for i, n, ct, g, city, a, p, r, nr, la, ln in c.execute(
-                "select id,name,cat,grp,city,address,phone,rating,nratings,lat,lng from places order by grp,city,name")]
+    fill_ostan(c)  # province of every place (big-city table + towns table), same logic as the Excel
+    rows = [[i, n, g, ct, o or "", city, a, p, r, nr, la, ln]
+            for i, n, ct, g, o, city, a, p, r, nr, la, ln in c.execute(
+                "select id,name,cat,grp,ostan,city,address,phone,rating,nratings,lat,lng from places order by ostan,grp,city,name")]
     json.dump({"updated": int(time.time()), "cols": COLS, "rows": rows}, open(out, "w", encoding="utf-8"),
               ensure_ascii=False, separators=(",", ":"))
     return len(rows)

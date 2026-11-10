@@ -48,7 +48,16 @@ jobs:
       - name: Scrape
         run: |
           if [ "$WANT_HOURS" = "true" ]; then H="--hours"; else H=""; fi
+          # the daily run also gives failed jobs a new chance, so nothing stays "given up" forever
+          if [ "${{ github.event_name }}" = "schedule" ]; then H="$H --retry"; fi
           python iran_food_scraper.py --max-minutes 300 $H
+
+      - name: Coverage report (per province; also shown on the run summary page)
+        if: always()
+        run: |
+          [ -f iran_food.db ] || exit 0
+          python iran_food_scraper.py --coverage | tee coverage.txt
+          { echo '### پوشش استان‌ها'; echo '```'; cat coverage.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save data
         if: always()
@@ -58,6 +67,7 @@ jobs:
           FILES="iran_food.db"
           [ -f iran_food_directory.xlsx ] && FILES="$FILES iran_food_directory.xlsx"
           [ -f errors.log ] && FILES="$FILES errors.log"
+          [ -f coverage.txt ] && FILES="$FILES coverage.txt"
           gh release upload data $FILES --clobber
 
       - name: Publish dashboard data (orphan branch sitedata, single commit)

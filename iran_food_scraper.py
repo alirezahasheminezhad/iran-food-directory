@@ -14,6 +14,9 @@ Options:
   --smoke               one test call per source, exit code 3 if both fail
   --merge FILE          add the places of another scraper database and mark its finished jobs as done here
   --status              print how much work is left (add --hours to include opening hours)
+  --coverage            per province: towns looked up, towns not found on the map, places found
+Every place gets its province (استان) automatically; towns that are still busy at the edge of their search circle
+get rings of extra circles (grow), and towns Balad did not find are looked up again with looser matching.
 Ctrl+C once = stop and save the Excel. Never press it twice or close the window while it says "saving".
 Optional proxies (used by the libraries): set BALAD_MCP_PROXY / NESHAN_MCP_PROXY to an HTTP proxy URL.
 """
@@ -21,6 +24,7 @@ import argparse, asyncio, json, math, os, sqlite3, sys, time
 
 from balad_mcp.maps import bl_nearby, bl_place, bl_search
 from neshan_mcp.maps import ns_place, ns_search
+from ostan import CITY_OSTAN, fill_ostan, km
 
 # city: (lat, lng, half_extent_km)  -- grid covers a square of +-extent around the centre
 CITIES = {
@@ -45,6 +49,7 @@ CITIES = {
     "کیش": (26.54, 53.97, 3), "نیشابور": (36.21, 58.80, 3), "سبزوار": (36.21, 57.68, 3),
     "تربت حیدریه": (35.27, 59.22, 2), "قوچان": (37.11, 58.51, 2), "شاهرود": (36.42, 54.97, 3),
 }
+assert set(CITIES) == set(CITY_OSTAN), "every city in CITIES needs its province in ostan.py"
 QUERIES = ["حبوبات فروشی", "ادویه فروشی", "medicinal-herbs-store", "nuts-store",
            "پخش مواد غذایی", "عمده فروشی مواد غذایی", "برنج فروشی"]
 NS_QUERIES = ["حبوبات فروشی", "ادویه فروشی", "عطاری", "خشکبار", "پخش مواد غذایی", "عمده فروشی مواد غذایی", "برنج فروشی"]
@@ -75,6 +80,7 @@ CREATE TABLE IF NOT EXISTS jobs(city TEXT, lat REAL, lng REAL, r REAL, q TEXT, d
 CREATE TABLE IF NOT EXISTS places(id TEXT PRIMARY KEY, name TEXT, cat TEXT, grp TEXT, city TEXT, address TEXT, phone TEXT,
   rating REAL, nratings INT, lat REAL, lng REAL, hours TEXT, hours_done INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS towns(name TEXT, ostan TEXT, lat REAL, lng REAL, county TEXT, PRIMARY KEY(name,ostan));
+CREATE INDEX IF NOT EXISTS places_city ON places(city);
 """)
 try:  # first start of v2 on a v1 database
     db.execute("ALTER TABLE jobs ADD COLUMN tries INTEGER DEFAULT 0")
@@ -83,6 +89,11 @@ try:  # first start of v2 on a v1 database
     db.commit()
 except sqlite3.OperationalError:
     pass
+if db.execute("PRAGMA user_version").fetchone()[0] < 1:
+    # towns Balad "did not find" were mostly a spelling mismatch ("سیستان وبلوچستان" vs "سیستان و بلوچستان"): ask again, once
+    db.execute("DELETE FROM towns WHERE lat IS NULL")
+    db.commit()
+    db.execute("PRAGMA user_version=1")
 
 
 def grid(city):
@@ -117,28 +128,40 @@ def _norm(t):
     return (t or "").replace("ي", "ی").replace("ك", "ک").replace("\u200c", " ").strip()
 
 
-def todo_towns():
+def _key(t):  # spacing differs between sources ("آران وبیدگل" / "آران و بیدگل"), so names are compared without spaces
+    return _norm(t).replace(" ", "")
+
+
+def _shahr():
+    """Every city of data/shahr.json (1324) as (name, province)."""
     here = os.path.dirname(os.path.abspath(__file__))
     ostan = {o["id"]: o["name"] for o in json.load(open(os.path.join(here, "data/ostan.json"), encoding="utf-8"))}
+    return [(x["name"], ostan[x["ostan"]]) for x in json.load(open(os.path.join(here, "data/shahr.json"), encoding="utf-8"))]
+
+
+def todo_towns():
     done = {(a, b) for a, b in db.execute("SELECT name,ostan FROM towns")}
     skip = {_norm(c) for c in CITIES}
-    return [(x["name"], ostan[x["ostan"]]) for x in json.load(open(os.path.join(here, "data/shahr.json"), encoding="utf-8"))
-            if (x["name"], ostan[x["ostan"]]) not in done and _norm(x["name"]) not in skip]
+    return [t for t in _shahr() if t not in done and _norm(t[0]) not in skip]
 
 
 async def discover():
-    """Every city of data/shahr.json (1324) that the 60 big-city grids do not already cover -> coordinates via Balad search."""
+    """Every city of data/shahr.json that the 60 big-city grids do not already cover -> coordinates via Balad search."""
     for name, prov in todo_towns():
         if DEADLINE and time.time() > DEADLINE:
             return
+        hit = None
         try:
-            rows = (await call("bl", bl_search, query=f"شهر {name} استان {prov}", limit=8))["results"]
+            for q, kinds in ((f"شهر {name} استان {prov}", ("city",)), (f"{name} {prov}", ("city", "region"))):
+                rows = (await call("bl", bl_search, query=q, limit=8))["results"]
+                hit = next((r for r in rows if r.get("type") in kinds and _key(name) in _key(r.get("name"))
+                            and _key(prov) in _key(r.get("address"))), None)
+                if hit:
+                    break
         except Stop:
             return
         except Exception:
             continue  # tried again on the next run
-        hit = next((r for r in rows if r.get("type") == "city" and _norm(name) in _norm(r.get("name"))
-                    and _norm(prov) in _norm(r.get("address"))), None)
         if hit:
             county = (hit.get("address") or "").split("شهرستان")[-1].strip()
             db.execute("INSERT OR IGNORE INTO towns VALUES(?,?,?,?,?)", (name, prov, hit["lat"], hit["lng"], county))
@@ -156,6 +179,32 @@ def seed_towns():
         for q in TOWN_Q:
             db.execute("INSERT OR IGNORE INTO jobs(city,lat,lng,r,q) VALUES(?,?,?,?,?)", (name, round(la, 4), round(ln, 4), 3.0, q))
     db.commit()
+
+
+RING_KM, MAX_RING, EDGE_MIN = 5.0, 2, 5  # extra circles 5 km and 10 km out; a ring is added when >=5 shops sit in the outer 1.5 km
+
+
+def grow():
+    """A town whose outer 1.5 km band still holds shops is bigger than the 3 km circle searched: add a ring of circles
+    around it (8 at 5 km, then 16 at 10 km; bigger cities are in CITIES). Returns True when jobs were added."""
+    added = 0
+    for name, la, ln in db.execute("SELECT name,lat,lng FROM towns WHERE lat IS NOT NULL").fetchall():
+        # searched radius so far = farthest job edge; jobs of a same-named town in another province lie > 15 km away
+        R = max((d + r for d, r in ((km(la, ln, a, b), r) for a, b, r in db.execute("SELECT lat,lng,r FROM jobs WHERE city=?", (name,))) if d < 15), default=0)
+        k = int((R - 3.0) / RING_KM + 0.5)  # rings already added: 0, 1 or 2
+        if R == 0 or k >= MAX_RING:
+            continue
+        band = sum(1 for a, b in db.execute("SELECT lat,lng FROM places WHERE city=? AND lat IS NOT NULL", (name,)) if R - 1.5 <= km(la, ln, a, b) <= R)
+        if band < EDGE_MIN:
+            continue
+        n, d = 8 * (k + 1), RING_KM * (k + 1)
+        for i in range(n):
+            t = 2 * math.pi * i / n
+            for q in TOWN_Q:
+                added += db.execute("INSERT OR IGNORE INTO jobs(city,lat,lng,r,q) VALUES(?,?,?,?,?)",
+                                    (name, round(la + d * math.cos(t) / 111.0, 4), round(ln + d * math.sin(t) / (111.0 * math.cos(math.radians(la))), 4), 3.0, q)).rowcount
+    db.commit()
+    return added > 0
 
 
 def save(city, places):
@@ -351,24 +400,25 @@ def export(path="iran_food_directory.xlsx"):
     ws = wb.active
     ws.title = "همه"
     ws.sheet_view.rightToLeft = True
-    head = ["ردیف", "نام", "گروه", "دسته", "شهر", "نشانی", "تلفن", "ساعت کار", "امتیاز", "تعداد امتیاز", "lat", "lng", "منبع"]
-    raw = db.execute("SELECT name,grp,cat,city,address,phone,hours,rating,nratings,lat,lng,id FROM places WHERE grp!='سایر' ORDER BY city,grp,name").fetchall()
+    head = ["ردیف", "نام", "گروه", "دسته", "استان", "شهر", "نشانی", "تلفن", "ساعت کار", "امتیاز", "تعداد امتیاز", "lat", "lng", "منبع"]
+    fill_ostan(db)
+    raw = db.execute("SELECT name,grp,cat,ostan,city,address,phone,hours,rating,nratings,lat,lng,id FROM places WHERE grp!='سایر' ORDER BY ostan,city,grp,name").fetchall()
     seen, rows = {}, []
     for r in raw:  # same shop in Balad and Neshan (same name, ~100 m): keep one, fill gaps from the other
-        k = (" ".join((r[0] or "").split()), round(r[9] or 0, 3), round(r[10] or 0, 3))
-        src = "نشان" if len(r[11]) == 32 else "بلد"
+        k = (" ".join((r[0] or "").split()), round(r[10] or 0, 3), round(r[11] or 0, 3))
+        src = "نشان" if len(r[12]) == 32 else "بلد"
         if k in seen:
             o = rows[seen[k]]
-            rows[seen[k]] = [o[i] or r[i] for i in range(11)] + ["+".join(dict.fromkeys(f"{o[11]}+{src}".split("+")))]
+            rows[seen[k]] = [o[i] or r[i] for i in range(12)] + ["+".join(dict.fromkeys(f"{o[12]}+{src}".split("+")))]
         else:
             seen[k] = len(rows)
-            rows.append(list(r[:11]) + [src])
+            rows.append(list(r[:12]) + [src])
     ws.append(head)
     for i, r in enumerate(rows, 1):
         ws.append([i, *r])
     for c in ws[1]:
         c.font, c.fill = Font(bold=True, color="FFFFFF"), PatternFill("solid", fgColor="1F4E78")
-    for col, w in zip("ABCDEFGHIJKLM", (6, 38, 20, 18, 14, 55, 18, 40, 8, 10, 10, 10, 10)):
+    for col, w in zip("ABCDEFGHIJKLMN", (6, 38, 20, 18, 18, 14, 55, 18, 40, 8, 10, 10, 10, 10)):
         ws.column_dimensions[col].width = w
     ws.freeze_panes, ws.auto_filter.ref = "A2", ws.dimensions
     tmp = path + ".tmp"
@@ -378,8 +428,33 @@ def export(path="iran_food_directory.xlsx"):
     except PermissionError:  # the old file is open in Excel
         path = path.replace(".xlsx", time.strftime("_%H%M%S.xlsx"))
         os.replace(tmp, path)
-    n_phone = sum(1 for r in rows if r[5])
+    n_phone = sum(1 for r in rows if r[6])
     print(f"saved {path}: {len(rows)} places, {n_phone} with phone")
+
+
+def coverage():
+    """Per province: towns in data/shahr.json, towns Balad could not locate, jobs still open, places found."""
+    fill_ostan(db)
+    found = {(a, b): c for a, b, c in db.execute("SELECT name,ostan,lat IS NOT NULL FROM towns")}
+    cities = {_norm(c) for c in CITIES}
+    per = {}
+    for name, prov in _shahr():
+        s = per.setdefault(prov, [0, 0, 0, 0, 0])
+        s[0] += 1
+        if _norm(name) in cities:
+            continue  # covered by its own grid
+        if (name, prov) not in found:
+            s[2] += 1  # never looked up
+        elif not found[(name, prov)]:
+            s[1] += 1  # looked up, not on the map
+    for prov, n in db.execute("SELECT ostan,COUNT(*) FROM places GROUP BY ostan"):
+        per.setdefault(prov, [0, 0, 0, 0, 0])[4] = n
+    open_jobs = db.execute("SELECT COUNT(*) FROM jobs WHERE done=0 AND tries<?", (MAX_TRIES,)).fetchone()[0]
+    print(f"{'استان':<22}{'شهرها':>7}{'پیدانشده':>10}{'جست‌وجونشده':>13}{'مکان':>8}")
+    for prov, s in sorted(per.items(), key=lambda x: -x[1][4]):
+        print(f"{prov or '(نامشخص)':<22}{s[0]:>7}{s[1]:>10}{s[2]:>13}{s[4]:>8}")
+    t = [sum(s[i] for s in per.values()) for i in range(5)]
+    print(f"{'جمع':<22}{t[0]:>7}{t[1]:>10}{t[2]:>13}{t[4]:>8} | jobs still open: {open_jobs}")
 
 
 async def smoke():
@@ -406,7 +481,11 @@ if __name__ == "__main__":
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--merge", default="")
     ap.add_argument("--status", action="store_true")
+    ap.add_argument("--coverage", action="store_true")
     a = ap.parse_args()
+    if a.coverage:
+        coverage()
+        sys.exit(0)
     if a.merge:
         merge(a.merge)
         sys.exit(0)
@@ -435,6 +514,8 @@ if __name__ == "__main__":
                     await discover()
                     seed_towns()
                 await scrape()
+                while not a.cities and not (DEADLINE and time.time() > DEADLINE) and grow():
+                    await scrape()  # busy towns got rings of extra circles; rings can grow once more, then stop
             asyncio.run(phase1())
             print("scraping finished - saving Excel...", flush=True)
             export()  # a usable file exists before the slow hours phase starts
