@@ -32,7 +32,11 @@ def fill_ostan(db):
     for city, o in CITY_OSTAN.items():
         db.execute("UPDATE places SET ostan=? WHERE ostan IS NULL AND city=?", (o, city))
     towns = {}
-    for name, o, la, ln in db.execute("SELECT name,ostan,lat,lng FROM towns WHERE lat IS NOT NULL"):
+    try:
+        town_rows = db.execute("SELECT name,ostan,lat,lng FROM towns WHERE lat IS NOT NULL").fetchall()
+    except sqlite3.OperationalError:
+        town_rows = []  # a v1 database has no towns table yet
+    for name, o, la, ln in town_rows:
         towns.setdefault(name, []).append((o, la, ln))
     for pid, city, la, ln in db.execute("SELECT id,city,lat,lng FROM places WHERE ostan IS NULL").fetchall():
         cand = towns.get(city, [])

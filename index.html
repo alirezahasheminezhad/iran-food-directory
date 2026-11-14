@@ -58,30 +58,32 @@ a{color:var(--acc)}
   <button id="reset">پاک‌کردن فیلترها</button><span class="sub" id="cnt"></span></div>
  <div class="wrap"><table><thead id="th"></thead><tbody id="tb"></tbody></table></div>
  <div class="pg"><button id="prev">قبلی</button><span id="pi" class="sub"></span><button id="next">بعدی</button>
-  <select id="ps" style="width:auto"><option>50</option><option>100</option><option>200</option></select></div>
+  <select id="ps" aria-label="تعداد ردیف در صفحه" style="width:auto"><option>50</option><option>100</option><option>200</option></select></div>
 </section>
-<p class="sub">داده از نقشه‌های بلد و نشان گردآوری شده و با هر اجرای جمع‌آوری به‌روز می‌شود.</p>
+<p class="sub">داده از نقشه‌های بلد و نشان (و در صورت اجرا، گوگل‌مپ) گردآوری شده و با هر اجرای جمع‌آوری به‌روز می‌شود.</p>
 </main>
 <aside id="dr" aria-live="polite"></aside>
 <div id="menu" class="card" hidden style="position:fixed;top:56px;left:16px;padding:10px;z-index:11;display:grid;gap:6px"></div>
 <script>
 const $=id=>document.getElementById(id);
 const RAW='https://raw.githubusercontent.com/alirezahasheminezhad/iran-food-directory/sitedata/places.json';
-const COLS=[['name','نام'],['grp','گروه'],['cat','دسته'],['ostan','استان'],['city','شهر'],['address','نشانی'],['phone','تلفن'],['rating','امتیاز'],['nratings','تعداد نظر']];
+const COLS=[['name','نام'],['grp','گروه'],['cat','دسته'],['ostan','استان'],['city','شهر'],['address','نشانی'],['phone','تلفن'],['hours','ساعت کار'],['rating','امتیاز'],['nratings','تعداد نظر'],['website','وب‌سایت'],['src','منبع']];
 const fa=n=>n==null||n===''?'':Number(n).toLocaleString('fa-IR');
-const norm=t=>String(t??'').replace(/ي/g,'ی').replace(/ك/g,'ک').replace(/[۰-۹]/g,d=>'۰۱۲۳۴۵۶۷۸۹'.indexOf(d)).replace(/[٠-٩]/g,d=>'٠١٢٣٤٥٦٧٨٩'.indexOf(d)).toLowerCase();
+const digits=t=>String(t??'').replace(/[۰-۹]/g,d=>'۰۱۲۳۴۵۶۷۸۹'.indexOf(d)).replace(/[٠-٩]/g,d=>'٠١٢٣٤٥٦٧٨٩'.indexOf(d));
+const norm=t=>digits(t).replace(/ي/g,'ی').replace(/ك/g,'ک').toLowerCase();
 const esc=t=>String(t??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-let D=[],view=[],sort={k:'name',d:1},page=0,hidden=new Set(['nratings']);
+const phones=p=>String(p??'').split(/[،,;؛]/).map(s=>digits(s).replace(/\D/g,'')).filter(Boolean);
+let D=[],view=[],sort={k:'name',d:1},page=0,hidden=new Set(['nratings','hours','website']);
 const lsGet=()=>{try{return JSON.parse(localStorage.getItem('ifd_hidden'))}catch{return null}};
-hidden=new Set(lsGet()||['nratings']);
+hidden=new Set(lsGet()||['nratings','hours','website']);
 
 async function load(){
   let d;
   for(const u of [RAW+'?_='+Math.floor(Date.now()/6e5),'places.json']){
     try{const r=await fetch(u);if(r.ok){d=await r.json();break}}catch{}
   }
-  if(!d){$('cnt').textContent='داده بارگذاری نشد';return}
-  D=d.rows.map(r=>{const o={};d.cols.forEach((c,i)=>o[c]=r[i]);o._s=norm([o.name,o.address,o.phone,o.city,o.ostan,o.cat].join(' '));return o});
+  if(!d){$('cnt').innerHTML='داده بارگذاری نشد <button id="retry">تلاش دوباره</button>';$('retry').onclick=load;return}
+  D=d.rows.map(r=>{const o={};d.cols.forEach((c,i)=>o[c]=r[i]);o._s=norm([o.name,o.address,o.phone,o.city,o.ostan,o.cat].join(' '))+' '+phones(o.phone).join(' ');return o});
   $('upd').textContent='آخرین به‌روزرسانی: '+new Date(d.updated*1000).toLocaleDateString('fa-IR');
   fill();apply();
 }
@@ -91,12 +93,12 @@ function fill(){
   opts($('fGrp'),'همه‌ی گروه‌ها',uniq('grp'));opts($('fOst'),'همه‌ی استان‌ها',uniq('ostan'));opts($('fCity'),'همه‌ی شهرها',uniq('city'));
   $('fRate').innerHTML='<option value="">هر امتیاز</option>'+[4.5,4,3.5,3].map(v=>`<option value="${v}">امتیاز ${fa(v)}+</option>`).join('');
 }
-const mob=p=>/^09\d{9}/.test(p||'');
+const mob=p=>phones(p).some(n=>/^(09\d{9}|989\d{9}|00989\d{9})$/.test(n));
 function apply(){
   const q=norm($('q').value).split(/\s+/).filter(Boolean),g=$('fGrp').value,o=$('fOst').value,c=$('fCity').value,r=+$('fRate').value||0,ph=$('fPhone').checked,mb=$('fMob').checked;
   view=D.filter(x=>(!g||x.grp===g)&&(!o||x.ostan===o)&&(!c||x.city===c)&&(!r||(x.rating||0)>=r)&&(!ph||x.phone)&&(!mb||mob(x.phone))&&q.every(t=>x._s.includes(t)));
   const {k,d}=sort,num=k==='rating'||k==='nratings';
-  view.sort((a,b)=>{const A=a[k],B=b[k];if(A==null||A==='')return 1;if(B==null||B==='')return -1;return d*(num?A-B:String(A).localeCompare(String(B),'fa'))});
+  view.sort((a,b)=>{const A=a[k],B=b[k],ea=A==null||A==='',eb=B==null||B==='';if(ea&&eb)return 0;if(ea)return 1;if(eb)return -1;return d*(num?A-B:String(A).localeCompare(String(B),'fa'))});
   page=0;render();stats();
 }
 function stats(){
@@ -113,18 +115,21 @@ function bars(t,k,f,lim=6){
 }
 function render(){
   const cs=COLS.filter(([k])=>!hidden.has(k)),ps=+$('ps').value,pages=Math.max(1,Math.ceil(view.length/ps));
-  $('th').innerHTML='<tr><th>#</th>'+cs.map(([k,l])=>`<th data-k="${k}">${l}<span class="ar"> ${sort.k===k?(sort.d>0?'▲':'▼'):''}</span></th>`).join('')+'</tr>';
+  $('th').innerHTML='<tr><th>#</th>'+cs.map(([k,l])=>`<th data-k="${k}" tabindex="0" aria-sort="${sort.k===k?(sort.d>0?'ascending':'descending'):'none'}">${l}<span class="ar"> ${sort.k===k?(sort.d>0?'▲':'▼'):''}</span></th>`).join('')+'</tr>';
   const rows=view.slice(page*ps,page*ps+ps);
   $('tb').innerHTML=rows.map((x,i)=>`<tr data-i="${page*ps+i}"><td class="n">${fa(page*ps+i+1)}</td>`+cs.map(([k])=>`<td class="${k==='phone'?'ph':k==='rating'||k==='nratings'?'n':''}">${esc(k==='rating'||k==='nratings'?fa(x[k]):x[k])}</td>`).join('')+'</tr>').join('')||`<tr><td colspan="99" class="sub" style="padding:24px;text-align:center">نتیجه‌ای پیدا نشد</td></tr>`;
   $('cnt').textContent=fa(view.length)+' از '+fa(D.length);
   $('pi').textContent=`صفحه ${fa(page+1)} از ${fa(pages)}`;$('prev').disabled=!page;$('next').disabled=page+1>=pages;
-  document.querySelectorAll('th[data-k]').forEach(h=>h.onclick=()=>{sort={k:h.dataset.k,d:sort.k===h.dataset.k?-sort.d:1};apply()});
+  document.querySelectorAll('th[data-k]').forEach(h=>{const go=()=>{sort={k:h.dataset.k,d:sort.k===h.dataset.k?-sort.d:1};apply()};h.onclick=go;h.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();go()}}});
   document.querySelectorAll('tbody tr[data-i]').forEach(r=>r.onclick=()=>detail(view[+r.dataset.i]));
 }
 function detail(x){
+  const has=x.lat!=null&&x.lng!=null&&x.lat!==''&&x.lng!=='';
   const map=`https://www.google.com/maps?q=${x.lat},${x.lng}`,nesh=`https://neshan.org/maps/@${x.lat},${x.lng},17z`;
+  const site=x.website?(/^https?:\/\//i.test(x.website)?x.website:'https://'+x.website):'';
+  const tel=phones(x.phone)[0]||x.phone;
   $('dr').innerHTML=`<h2>${esc(x.name)}</h2><dl>${COLS.slice(1).map(([k,l])=>x[k]!=null&&x[k]!==''?`<dt>${l}</dt><dd>${esc(x[k])}</dd>`:'').join('')}</dl>
-  <div class="acts">${x.phone?`<a href="tel:${esc(x.phone)}"><button>تماس</button></a><button id="cp">کپی تلفن</button>`:''}<a href="${map}" target="_blank" rel="noopener"><button>گوگل‌مپ</button></a><a href="${nesh}" target="_blank" rel="noopener"><button>نشان</button></a><button id="cl">بستن</button></div>`;
+  <div class="acts">${x.phone?`<a href="tel:${esc(tel)}"><button>تماس</button></a><button id="cp">کپی تلفن</button>`:''}${site?`<a href="${esc(site)}" target="_blank" rel="noopener"><button>وب‌سایت</button></a>`:''}${has?`<a href="${map}" target="_blank" rel="noopener"><button>گوگل‌مپ</button></a><a href="${nesh}" target="_blank" rel="noopener"><button>نشان</button></a>`:''}<button id="cl">بستن</button></div>`;
   $('cl').onclick=()=>$('dr').classList.remove('on');if($('cp'))$('cp').onclick=()=>navigator.clipboard.writeText(x.phone);
   $('dr').classList.add('on');
 }
@@ -134,8 +139,10 @@ $('csv').onclick=()=>{const r=exp();if(!r.length)return;const h=Object.keys(r[0]
   Object.assign(document.createElement('a'),{href:URL.createObjectURL(b),download:'iran-food.csv'}).click()};
 $('xls').onclick=async()=>{
   if(!view.length)return;
-  if(!window.XLSX)await new Promise((ok,no)=>{const s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';s.onload=ok;s.onerror=no;document.head.appendChild(s)});
-  const wb=XLSX.utils.book_new();wb.Workbook={Views:[{RTL:true}]};XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(exp()),'فهرست');XLSX.writeFile(wb,'iran-food.xlsx')};
+  try{
+    if(!window.XLSX)await new Promise((ok,no)=>{const s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';s.onload=ok;s.onerror=no;document.head.appendChild(s)});
+    const wb=XLSX.utils.book_new();wb.Workbook={Views:[{RTL:true}]};XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(exp()),'فهرست');XLSX.writeFile(wb,'iran-food.xlsx');
+  }catch{alert('کتابخانه اکسل بارگذاری نشد؛ اتصال اینترنت را بررسی کنید یا از خروجی CSV استفاده کنید.')}};
 $('cols').onclick=e=>{const m=$('menu');m.hidden=!m.hidden;m.innerHTML=COLS.map(([k,l])=>`<label class="chk"><input type="checkbox" data-k="${k}" ${hidden.has(k)?'':'checked'}> ${l}</label>`).join('');
   m.querySelectorAll('input').forEach(i=>i.onchange=()=>{i.checked?hidden.delete(i.dataset.k):hidden.add(i.dataset.k);try{localStorage.setItem('ifd_hidden',JSON.stringify([...hidden]))}catch{}render()})};
 let tm;$('q').oninput=()=>{clearTimeout(tm);tm=setTimeout(apply,200)};

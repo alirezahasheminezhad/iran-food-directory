@@ -46,6 +46,7 @@ jobs:
         run: python iran_food_scraper.py --smoke
 
       - name: Scrape
+        id: scrape
         run: |
           if [ "$WANT_HOURS" = "true" ]; then H="--hours"; else H=""; fi
           # the daily run also gives failed jobs a new chance, so nothing stays "given up" forever
@@ -80,12 +81,15 @@ jobs:
           git push -q -f https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git sitedata
 
       - name: Start the next run if work is left
-        if: success()
+        # keep going even if the scrape hit a transient error; only a skipped (failed smoke test)
+        # or cancelled run stops the chain - the daily cron restarts it then
+        if: always() && steps.scrape.outcome != 'skipped' && steps.scrape.outcome != 'cancelled'
         run: |
+          [ -f iran_food.db ] || exit 0
           if [ "$WANT_HOURS" = "true" ]; then H="--hours"; else H=""; fi
           LEFT=$(python iran_food_scraper.py --status $H)
           ROUND=${{ inputs.round || 0 }}
           echo "work left: $LEFT (round $ROUND)"
-          if [ "$LEFT" -gt 0 ] && [ "$ROUND" -lt 12 ]; then
+          if [ "$LEFT" -gt 0 ] && [ "$ROUND" -lt 200 ]; then
             gh workflow run scrape.yml -f hours=$WANT_HOURS -f round=$((ROUND + 1))
           fi

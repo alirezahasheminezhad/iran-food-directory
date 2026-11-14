@@ -1,6 +1,7 @@
 """Iran food-supplier directory (حبوبات، ادویه، عطاری، خشکبار، پخش، عمده‌فروشی ...) -> Excel.  v2
 
-Sources: Balad + Neshan (via the balad-mcp / neshan-mcp libraries). Resumable: progress lives in iran_food.db.
+Sources: Balad + Neshan (via the balad-mcp / neshan-mcp libraries), optionally Google Maps via
+google_enrich.py (local, gentle, resumable). Resumable: progress lives in iran_food.db.
 v2 is gentle on the servers: each source has its own pace that slows down after errors, speeds up again on
 success and pauses (2, 4, 8 ... 30 min) when it looks blocked. Failed jobs are retried later, never in a loop.
 
@@ -24,31 +25,9 @@ import argparse, asyncio, json, math, os, sqlite3, sys, time
 
 from balad_mcp.maps import bl_nearby, bl_place, bl_search
 from neshan_mcp.maps import ns_place, ns_search
+from common import CITIES, classify, key as _key, norm as _norm, merged_rows
 from ostan import CITY_OSTAN, fill_ostan, km
 
-# city: (lat, lng, half_extent_km)  -- grid covers a square of +-extent around the centre
-CITIES = {
-    "تهران": (35.70, 51.38, 16), "کرج": (35.83, 50.98, 8), "مشهد": (36.30, 59.58, 10),
-    "اصفهان": (32.65, 51.67, 8), "شیراز": (29.61, 52.54, 8), "تبریز": (38.08, 46.30, 8),
-    "قم": (34.64, 50.88, 6), "اهواز": (31.32, 48.68, 8), "کرمانشاه": (34.31, 47.07, 5),
-    "ارومیه": (37.55, 45.07, 5), "رشت": (37.28, 49.58, 5), "زاهدان": (29.50, 60.86, 5),
-    "کرمان": (30.28, 57.08, 5), "همدان": (34.80, 48.51, 5), "یزد": (31.90, 54.37, 5),
-    "اراک": (34.09, 49.69, 5), "اردبیل": (38.25, 48.30, 4), "بندرعباس": (27.19, 56.27, 5),
-    "اسلامشهر": (35.55, 51.23, 4), "قزوین": (36.27, 50.00, 5), "زنجان": (36.68, 48.49, 4),
-    "سنندج": (35.31, 47.00, 4), "خرم‌آباد": (33.49, 48.35, 4), "گرگان": (36.84, 54.43, 4),
-    "ساری": (36.56, 53.06, 4), "بوشهر": (28.92, 50.84, 4), "ورامین": (35.32, 51.65, 3),
-    "قدس و شهریار": (35.72, 51.10, 5), "بجنورد": (37.47, 57.33, 3), "بیرجند": (32.87, 59.22, 3),
-    "ایلام": (33.64, 46.42, 3), "یاسوج": (30.67, 51.59, 3), "شهرکرد": (32.33, 50.86, 3),
-    "سمنان": (35.58, 53.39, 3), "بابل": (36.55, 52.68, 3), "آمل": (36.47, 52.35, 3),
-    "دزفول": (32.38, 48.40, 3), "نجف‌آباد": (32.63, 51.37, 3), "بروجرد": (33.90, 48.76, 3),
-    "ساوه": (35.02, 50.36, 3), "خمینی‌شهر": (32.69, 51.52, 3), "سیرجان": (29.45, 55.68, 3),
-    "رفسنجان": (30.41, 55.99, 3), "ملایر": (34.30, 48.82, 3), "مراغه": (37.39, 46.24, 3),
-    "خوی": (38.55, 44.95, 3), "بم": (29.11, 58.36, 2), "قائمشهر": (36.46, 52.86, 3),
-    "کاشان": (33.98, 51.41, 4), "آبادان": (30.34, 48.30, 4), "ماهشهر": (30.56, 49.20, 3),
-    "بهبهان": (30.59, 50.24, 3), "ایرانشهر": (27.20, 60.69, 2), "چابهار": (25.29, 60.64, 2),
-    "کیش": (26.54, 53.97, 3), "نیشابور": (36.21, 58.80, 3), "سبزوار": (36.21, 57.68, 3),
-    "تربت حیدریه": (35.27, 59.22, 2), "قوچان": (37.11, 58.51, 2), "شاهرود": (36.42, 54.97, 3),
-}
 assert set(CITIES) == set(CITY_OSTAN), "every city in CITIES needs its province in ostan.py"
 QUERIES = ["حبوبات فروشی", "ادویه فروشی", "medicinal-herbs-store", "nuts-store",
            "پخش مواد غذایی", "عمده فروشی مواد غذایی", "برنج فروشی"]
@@ -56,25 +35,12 @@ NS_QUERIES = ["حبوبات فروشی", "ادویه فروشی", "عطاری", 
 STEP_KM, RADIUS_KM, LIMIT, MIN_RADIUS = 4.0, 2.4, 40, 0.3
 BL_DELAY, NS_DELAY = 2.0, 6.0  # seconds between calls, per source (one Balad call = 2-3 HTTP requests)
 WORKERS, MAX_TRIES, PAUSE_S, PAUSE_MAX = 2, 6, 120, 1800  # pause after 4 failures in a row: 2, 4, 8 ... 30 min
-GROUPS = [  # first match wins
-    ("حبوبات", ("حبوبات", "بقولات")), ("ادویه", ("ادویه", "ادویه‌جات")),
-    ("عطاری/گیاهان دارویی", ("عطاری", "گیاهان دارویی", "گیاه")),
-    ("خشکبار/آجیل", ("خشکبار", "آجیل")), ("برنج", ("برنج",)),
-    ("پخش/عمده/بنکداری", ("پخش", "عمده", "بنکدار", "انبار", "بازرگانی", "بورس")),
-]  # plain supermarkets / grocery shops fall into "سایر" and are left out of the export
-
-
-def classify(name, cat):
-    t = f"{name} {cat}"
-    for g, keys in GROUPS:
-        if any(k in t for k in keys):
-            return g
-    return "سایر"
-
 
 assert classify("ادویه فروشی محمدی", "ادویه فروشی") == "ادویه" and classify("x", "y") == "سایر"
+assert classify("Herbal medicine store", "Herbal medicine store") == "عطاری/گیاهان دارویی"
 
-db = sqlite3.connect("iran_food.db")
+HERE = os.path.dirname(os.path.abspath(__file__))
+db = sqlite3.connect(os.path.join(HERE, "iran_food.db"))
 db.executescript("""
 CREATE TABLE IF NOT EXISTS jobs(city TEXT, lat REAL, lng REAL, r REAL, q TEXT, done INTEGER DEFAULT 0, PRIMARY KEY(city,lat,lng,r,q));
 CREATE TABLE IF NOT EXISTS places(id TEXT PRIMARY KEY, name TEXT, cat TEXT, grp TEXT, city TEXT, address TEXT, phone TEXT,
@@ -86,6 +52,11 @@ try:  # first start of v2 on a v1 database
     db.execute("ALTER TABLE jobs ADD COLUMN tries INTEGER DEFAULT 0")
     # v1 split Neshan boxes into 4 sub-boxes forever; Neshan ranks by distance, not by box, so those ~9000 jobs were redundant
     db.execute("DELETE FROM jobs WHERE done=0 AND q LIKE 'ns:%' AND ROUND(r,2) IN (1.2,0.6,0.3)")
+    db.commit()
+except sqlite3.OperationalError:
+    pass
+try:  # website column (filled by --hours and by the Google import)
+    db.execute("ALTER TABLE places ADD COLUMN website TEXT")
     db.commit()
 except sqlite3.OperationalError:
     pass
@@ -122,14 +93,6 @@ def seed(cities):
 
 
 TOWN_Q = QUERIES + ["ns:" + x for x in ("عطاری", "حبوبات فروشی")]  # small towns: Neshan gets 2 queries, it rate-limits hardest
-
-
-def _norm(t):
-    return (t or "").replace("ي", "ی").replace("ك", "ک").replace("\u200c", " ").strip()
-
-
-def _key(t):  # spacing differs between sources ("آران وبیدگل" / "آران و بیدگل"), so names are compared without spaces
-    return _norm(t).replace(" ", "")
 
 
 def _shahr():
@@ -211,9 +174,19 @@ def save(city, places):
     for p in places:
         g = classify(p.get("name") or "", p.get("category") or "")
         # no supermarkets, and drop unrelated hits from free-text search
-        if not p.get("id") or g == "سایر" or ("مارکت" in (p.get("category") or "") and g == "خواربار/مواد غذایی"):
+        if not p.get("id") or g == "سایر":
             continue
-        db.execute("INSERT OR IGNORE INTO places(id,name,cat,grp,city,address,phone,rating,nratings,lat,lng) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        # keep the first row, but fill fields it lacks from later sightings (another source, another grid cell)
+        db.execute("""INSERT INTO places(id,name,cat,grp,city,address,phone,rating,nratings,lat,lng) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                      ON CONFLICT(id) DO UPDATE SET
+                        name=COALESCE(NULLIF(excluded.name,''), places.name),
+                        cat=COALESCE(NULLIF(excluded.cat,''), places.cat),
+                        address=COALESCE(NULLIF(excluded.address,''), places.address),
+                        phone=COALESCE(NULLIF(excluded.phone,''), places.phone),
+                        rating=COALESCE(places.rating, excluded.rating),
+                        nratings=COALESCE(places.nratings, excluded.nratings),
+                        lat=COALESCE(places.lat, excluded.lat),
+                        lng=COALESCE(places.lng, excluded.lng)""",
                    (p["id"], p.get("name"), p.get("category"), g, city,
                     p.get("address"), p.get("phone"), p.get("rating"), p.get("ratings", p.get("votes")), p.get("lat"), p.get("lng")))
 
@@ -246,7 +219,7 @@ class Gate:
         self.errors += 1
         self.streak += 1
         self.delay = min(30.0, self.delay * 1.3)  # stays put at ~30% errors, slows beyond that
-        with open("errors.log", "a", encoding="utf-8") as f:
+        with open(os.path.join(HERE, "errors.log"), "a", encoding="utf-8") as f:
             f.write(f"{time.strftime('%H:%M:%S')} {self.name} {err}\n")
         if self.streak >= 4:
             wait = min(PAUSE_MAX, PAUSE_S * 2 ** (self.streak - 4))
@@ -355,22 +328,26 @@ async def hours_one(row):
         if len(pid) == 32:  # Neshan id
             d = await call("ns", ns_place, place_id=pid)
             txt = "؛ ".join(d.get("hours") or []) or (d.get("open") or "")
+            web = d.get("website") or ""
         else:
             d = await call("bl", bl_place, id=pid, reviews=0, photos=0)
             txt = "؛ ".join(f"{k}: {v}" for k, v in (d.get("hours") or {}).items()) or (d.get("hours_status") or "")
+            web = (d.get("links") or {}).get("web") or ""
     except Stop:
         return
     except Exception:
         db.execute("UPDATE places SET hours_done=hours_done-1 WHERE id=?", (pid,))  # 0 = todo, 1 = done, -1..-3 = failed
         return
     ph = "، ".join(d.get("phones") or [])
-    db.execute("UPDATE places SET hours=?, hours_done=1, phone=COALESCE(NULLIF(?,''), phone) WHERE id=?", (txt, ph, pid))
+    db.execute("UPDATE places SET hours=?, hours_done=1, phone=COALESCE(NULLIF(?,''), phone), website=COALESCE(NULLIF(?,''), website) WHERE id=?",
+               (txt, ph, web, pid))
 
 
 async def fetch_hours():
     d0 = db.execute("SELECT SUM(hours_done=1) FROM places").fetchone()[0] or 0
     prog = asyncio.create_task(progress("hours", time.time(), d0))
-    base = "SELECT id FROM places WHERE hours_done<=0 AND hours_done>-3 AND grp!='سایر' AND %s ORDER BY hours_done DESC, rowid LIMIT 8"
+    # Google places (g:...) arrive with their hours already filled by google_enrich.py
+    base = "SELECT id FROM places WHERE hours_done<=0 AND hours_done>-3 AND grp!='سایر' AND id NOT LIKE 'g:%' AND %s ORDER BY hours_done DESC, rowid LIMIT 8"
     try:
         await asyncio.gather(*(pool(base % c, hours_one) for c in ("length(id)!=32", "length(id)=32") for _ in range(WORKERS)))
     finally:
@@ -383,6 +360,9 @@ def merge(path):
     seed(list(CITIES))  # make sure every grid job exists here, so it can be marked done
     db.commit()
     db.execute("ATTACH DATABASE ? AS o", (path,))
+    if db.execute("SELECT name FROM o.sqlite_master WHERE type='table' AND name='towns'").fetchone():
+        db.execute("INSERT OR IGNORE INTO towns SELECT name,ostan,lat,lng,county FROM o.towns")
+        seed_towns()  # town jobs of the other run exist here too, so they can be marked done
     before = db.execute("SELECT COUNT(*) FROM places").fetchone()[0]
     db.execute("INSERT OR IGNORE INTO places(id,name,cat,grp,city,address,phone,rating,nratings,lat,lng,hours,hours_done) "
                "SELECT id,name,cat,grp,city,address,phone,rating,nratings,lat,lng,hours,hours_done FROM o.places")
@@ -400,25 +380,14 @@ def export(path="iran_food_directory.xlsx"):
     ws = wb.active
     ws.title = "همه"
     ws.sheet_view.rightToLeft = True
-    head = ["ردیف", "نام", "گروه", "دسته", "استان", "شهر", "نشانی", "تلفن", "ساعت کار", "امتیاز", "تعداد امتیاز", "lat", "lng", "منبع"]
-    fill_ostan(db)
-    raw = db.execute("SELECT name,grp,cat,ostan,city,address,phone,hours,rating,nratings,lat,lng,id FROM places WHERE grp!='سایر' ORDER BY ostan,city,grp,name").fetchall()
-    seen, rows = {}, []
-    for r in raw:  # same shop in Balad and Neshan (same name, ~100 m): keep one, fill gaps from the other
-        k = (" ".join((r[0] or "").split()), round(r[10] or 0, 3), round(r[11] or 0, 3))
-        src = "نشان" if len(r[12]) == 32 else "بلد"
-        if k in seen:
-            o = rows[seen[k]]
-            rows[seen[k]] = [o[i] or r[i] for i in range(12)] + ["+".join(dict.fromkeys(f"{o[12]}+{src}".split("+")))]
-        else:
-            seen[k] = len(rows)
-            rows.append(list(r[:12]) + [src])
+    head = ["ردیف", "نام", "گروه", "دسته", "استان", "شهر", "نشانی", "تلفن", "ساعت کار", "امتیاز", "تعداد امتیاز", "lat", "lng", "وب‌سایت", "منبع"]
+    rows = merged_rows(db)  # one row per shop, gaps filled across sources (same merge as the dashboard)
     ws.append(head)
     for i, r in enumerate(rows, 1):
         ws.append([i, *r])
     for c in ws[1]:
         c.font, c.fill = Font(bold=True, color="FFFFFF"), PatternFill("solid", fgColor="1F4E78")
-    for col, w in zip("ABCDEFGHIJKLMN", (6, 38, 20, 18, 18, 14, 55, 18, 40, 8, 10, 10, 10, 10)):
+    for col, w in zip("ABCDEFGHIJKLMNO", (6, 38, 20, 18, 18, 14, 55, 22, 40, 8, 10, 10, 10, 30, 14)):
         ws.column_dimensions[col].width = w
     ws.freeze_panes, ws.auto_filter.ref = "A2", ws.dimensions
     tmp = path + ".tmp"
@@ -509,18 +478,18 @@ if __name__ == "__main__":
         sys.exit(f"unknown city: {bad}") if bad else None
         seed(sel)
         try:
-            async def phase1():  # one event loop: the libs keep a session bound to the first loop they see
+            async def phase1():  # one event loop for everything: the libs keep a session bound to the first loop they see
                 if not a.cities:
                     await discover()
                     seed_towns()
                 await scrape()
                 while not a.cities and not (DEADLINE and time.time() > DEADLINE) and grow():
                     await scrape()  # busy towns got rings of extra circles; rings can grow once more, then stop
+                print("scraping finished - saving Excel...", flush=True)
+                export()  # a usable file exists before the slow hours phase starts
+                if a.hours and not (DEADLINE and time.time() > DEADLINE):
+                    await fetch_hours()
             asyncio.run(phase1())
-            print("scraping finished - saving Excel...", flush=True)
-            export()  # a usable file exists before the slow hours phase starts
-            if a.hours and not (DEADLINE and time.time() > DEADLINE):
-                asyncio.run(fetch_hours())  # shortcut: new loop, reuses a closed Balad session; fix before using --hours
         except KeyboardInterrupt:
             print("stopped - progress is saved.")
         db.commit()
