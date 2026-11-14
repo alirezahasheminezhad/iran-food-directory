@@ -347,7 +347,7 @@ async def fetch_hours():
     d0 = db.execute("SELECT SUM(hours_done=1) FROM places").fetchone()[0] or 0
     prog = asyncio.create_task(progress("hours", time.time(), d0))
     # Google places (g:...) arrive with their hours already filled by google_enrich.py
-    base = "SELECT id FROM places WHERE hours_done<=0 AND hours_done>-3 AND grp!='سایر' AND id NOT LIKE 'g:%' AND %s ORDER BY hours_done DESC, rowid LIMIT 8"
+    base = "SELECT id FROM places WHERE hours_done<=0 AND hours_done>-3 AND grp!='سایر' AND id NOT LIKE 'g:%%' AND %s ORDER BY hours_done DESC, rowid LIMIT 8"
     try:
         await asyncio.gather(*(pool(base % c, hours_one) for c in ("length(id)!=32", "length(id)=32") for _ in range(WORKERS)))
     finally:

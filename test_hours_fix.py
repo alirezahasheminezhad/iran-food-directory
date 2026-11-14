@@ -57,3 +57,40 @@ async def phase1():
 
 asyncio.run(phase1())
 print("scraper flow (mocked): scrape + hours in one loop, both sources -> OK")
+
+# 4) regression: fetch_hours builds its SQL with %-formatting; a literal LIKE 'g:%' must be
+#    escaped ('g:%%') or `base % c` raises "unsupported format character". Run the real
+#    fetch_hours against an in-memory DB with a stubbed pool that executes each query.
+import sqlite3
+
+import iran_food_scraper as s
+
+mem = sqlite3.connect(":memory:")
+mem.execute("CREATE TABLE places(id TEXT PRIMARY KEY, grp TEXT, hours_done INTEGER)")
+mem.execute("INSERT INTO places VALUES('g:abc', 'برنج', 1)")          # Google: already has hours
+mem.execute("INSERT INTO places VALUES('balad1', 'برنج', 0)")         # todo
+mem.execute("INSERT INTO places VALUES(?, 'برنج', 0)", ("x" * 32,))   # Neshan-length id, todo
+
+seen = []
+
+
+async def fake_pool(sql, one):
+    seen.append(sql)
+    mem.execute(sql).fetchall()  # raises if the SQL is malformed
+    return []
+
+
+class _Prog:
+    def cancel(self):
+        pass
+
+
+async def fake_progress(*a):
+    return _Prog()
+
+
+s.db, s.pool, s.progress = mem, fake_pool, fake_progress
+asyncio.run(s.fetch_hours())
+assert len(seen) == 2 * s.WORKERS, seen
+assert all("id NOT LIKE 'g:%'" in q for q in seen), "Google rows must be excluded from the hours queue"
+print("fetch_hours SQL: literal LIKE escaped, both source queries execute -> OK")
