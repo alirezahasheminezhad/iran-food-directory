@@ -3,3 +3,5 @@ iran_food.db*
 *.tmp
 errors.log
 __pycache__/
+instagram/data/
+node_modules/

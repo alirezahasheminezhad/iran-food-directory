@@ -4,7 +4,7 @@ import json, os, sqlite3, sys, time
 
 from common import merged_rows
 
-COLS = ["name", "grp", "cat", "ostan", "city", "address", "phone", "hours", "rating", "nratings", "lat", "lng", "website", "src"]
+COLS = ["name", "grp", "cat", "ostan", "city", "address", "phone", "hours", "rating", "nratings", "lat", "lng", "website", "instagram", "src"]
 
 
 def export(db, out):

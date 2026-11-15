@@ -59,6 +59,8 @@ def key(t):  # spacing differs between sources ("آران وبیدگل" / "آر�
 
 def source_of(pid):
     pid = pid or ""
+    if pid.startswith("ig:"):
+        return "اینستاگرام"
     if pid.startswith("g:"):
         return "گوگل"
     return "نشان" if len(pid) == 32 else "بلد"
@@ -67,8 +69,8 @@ def source_of(pid):
 MERGE_KM = 0.15  # same normalized name within 150 m = the same shop (branches farther apart stay separate)
 
 # raw row layout: 0 name, 1 grp, 2 cat, 3 ostan, 4 city, 5 address, 6 phone, 7 hours,
-#                 8 rating, 9 nratings, 10 lat, 11 lng, 12 id, 13 website
-# merged row layout: the first 12, then website, then source(s)
+#                 8 rating, 9 nratings, 10 lat, 11 lng, 12 id, 13 website, 14 instagram
+# merged row layout: the first 12, then website, then instagram, then source(s)
 
 
 def _same_spot(a, b):
@@ -81,21 +83,24 @@ def _merge_cluster(c):
     out = [next((r[i] for r in c if r[i] not in (None, "")), None) for i in range(12)]
     phones = list(dict.fromkeys(p.strip() for r in c for p in (r[6] or "").replace(";", "،").split("،") if p.strip()))
     out[6] = "، ".join(phones[:3]) or None
-    out.append(next((r[13] for r in c if r[13]), None))
+    out.append(next((r[13] for r in c if r[13]), None))  # website
+    igs = list(dict.fromkeys(r[14] for r in c if r[14]))
+    out.append("، ".join(igs) or None)  # instagram page(s)
     out.append("+".join(dict.fromkeys(source_of(r[12]) for r in c)))
     return out
 
 
 def merged_rows(db):
-    """One row per shop across Balad / Neshan / Google: same normalized name close by = one shop,
-    empty fields filled from the other sources, phones combined, sources listed as بلد+نشان+گوگل.
+    """One row per shop across Balad / Neshan / Google / Instagram: same normalized name close by = one shop,
+    empty fields filled from the other sources, phones combined, sources listed as بلد+نشان+گوگل+اینستاگرام.
     Used by both exports so the Excel and the dashboard can never disagree."""
-    try:
-        db.execute("ALTER TABLE places ADD COLUMN website TEXT")
-    except sqlite3.OperationalError:
-        pass  # already there
+    for col in ("website", "instagram"):
+        try:
+            db.execute(f"ALTER TABLE places ADD COLUMN {col} TEXT")
+        except sqlite3.OperationalError:
+            pass  # already there
     fill_ostan(db)
-    raw = db.execute("SELECT name,grp,cat,ostan,city,address,phone,hours,rating,nratings,lat,lng,id,website "
+    raw = db.execute("SELECT name,grp,cat,ostan,city,address,phone,hours,rating,nratings,lat,lng,id,website,instagram "
                      "FROM places WHERE grp!='سایر'").fetchall()
     by_key = {}
     for r in raw:

@@ -1,0 +1,79 @@
+name: instagram
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 */6 * * *"   # every 6 hours, offset from the map scrape
+
+concurrency:
+  group: instagram
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # release with the data + dashboard branch
+
+jobs:
+  instagram:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: pip install openpyxl
+
+      - name: Restore data (release "data")
+        run: gh release download data -p iran_food.db || echo "no saved data yet"
+
+      - name: Collect Instagram pages - Behtarino (bounded)
+        run: timeout 1500 env IG_PERSIST=1 IG_MAX_HOURS=0.4 node instagram/scripts/collect-behtarino.mjs --pages=3 || true
+
+      - name: Collect Instagram pages - top118 (bounded)
+        run: timeout 1200 env IG_PERSIST=1 IG_MAX_HOURS=0.3 node instagram/scripts/collect-top118.mjs --pages=4 || true
+
+      - name: Merge Instagram sources into one file
+        run: node instagram/scripts/build.mjs || true
+
+      - name: Merge Instagram into the places DB (as source اینستاگرام)
+        run: |
+          [ -f iran_food.db ] || exit 0
+          [ -f instagram/data/instagram-pages.json ] || exit 0
+          python instagram_merge.py instagram/data/instagram-pages.json iran_food.db
+
+      - name: Rebuild Excel + dashboard JSON
+        run: |
+          [ -f iran_food.db ] || exit 0
+          python export_xlsx.py iran_food.db iran_food_directory.xlsx
+          python export_json.py iran_food.db places.json
+
+      - name: Save data (release "data")
+        if: always()
+        run: |
+          [ -f iran_food.db ] || exit 0
+          gh release view data >/dev/null 2>&1 || gh release create data --title "data" --notes "Scraper state and the Excel file (updated automatically)"
+          FILES="iran_food.db"
+          [ -f iran_food_directory.xlsx ] && FILES="$FILES iran_food_directory.xlsx"
+          gh release upload data $FILES --clobber
+
+      - name: Publish dashboard data (orphan branch sitedata)
+        if: always()
+        run: |
+          [ -f places.json ] || exit 0
+          d=$(mktemp -d) && cp places.json "$d/places.json" && cd "$d"
+          git init -q -b sitedata && git config user.name instagram-bot && git config user.email bot@users.noreply.github.com
+          git add . && git commit -qm "instagram data $(date -u +%FT%TZ)"
+          git push -q -f https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git sitedata
+
+      - name: Commit dashboard JSON to main
+        if: always()
+        run: |
+          [ -f places.json ] || exit 0
+          git config user.name instagram-bot && git config user.email bot@users.noreply.github.com
+          git add places.json
+          git diff --cached --quiet || { git commit -qm "data: instagram refresh $(date -u +%FT%TZ)"; git push; }

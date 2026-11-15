@@ -67,7 +67,7 @@ a{color:var(--acc)}
 <script>
 const $=id=>document.getElementById(id);
 const RAW='https://raw.githubusercontent.com/alirezahasheminezhad/iran-food-directory/sitedata/places.json';
-const COLS=[['name','نام'],['grp','گروه'],['cat','دسته'],['ostan','استان'],['city','شهر'],['address','نشانی'],['phone','تلفن'],['hours','ساعت کار'],['rating','امتیاز'],['nratings','تعداد نظر'],['website','وب‌سایت'],['src','منبع']];
+const COLS=[['name','نام'],['grp','گروه'],['cat','دسته'],['ostan','استان'],['city','شهر'],['address','نشانی'],['phone','تلفن'],['hours','ساعت کار'],['rating','امتیاز'],['nratings','تعداد نظر'],['website','وب‌سایت'],['instagram','اینستاگرام'],['src','منبع']];
 const fa=n=>n==null||n===''?'':Number(n).toLocaleString('fa-IR');
 const digits=t=>String(t??'').replace(/[۰-۹]/g,d=>'۰۱۲۳۴۵۶۷۸۹'.indexOf(d)).replace(/[٠-٩]/g,d=>'٠١٢٣٤٥٦٧٨٩'.indexOf(d));
 const norm=t=>digits(t).replace(/ي/g,'ی').replace(/ك/g,'ک').toLowerCase();
@@ -127,9 +127,10 @@ function detail(x){
   const has=x.lat!=null&&x.lng!=null&&x.lat!==''&&x.lng!=='';
   const map=`https://www.google.com/maps?q=${x.lat},${x.lng}`,nesh=`https://neshan.org/maps/@${x.lat},${x.lng},17z`;
   const site=x.website?(/^https?:\/\//i.test(x.website)?x.website:'https://'+x.website):'';
+  const ig=x.instagram?String(x.instagram).split('،')[0].trim():'';
   const tel=phones(x.phone)[0]||x.phone;
   $('dr').innerHTML=`<h2>${esc(x.name)}</h2><dl>${COLS.slice(1).map(([k,l])=>x[k]!=null&&x[k]!==''?`<dt>${l}</dt><dd>${esc(x[k])}</dd>`:'').join('')}</dl>
-  <div class="acts">${x.phone?`<a href="tel:${esc(tel)}"><button>تماس</button></a><button id="cp">کپی تلفن</button>`:''}${site?`<a href="${esc(site)}" target="_blank" rel="noopener"><button>وب‌سایت</button></a>`:''}${has?`<a href="${map}" target="_blank" rel="noopener"><button>گوگل‌مپ</button></a><a href="${nesh}" target="_blank" rel="noopener"><button>نشان</button></a>`:''}<button id="cl">بستن</button></div>`;
+  <div class="acts">${x.phone?`<a href="tel:${esc(tel)}"><button>تماس</button></a><button id="cp">کپی تلفن</button>`:''}${site?`<a href="${esc(site)}" target="_blank" rel="noopener"><button>وب‌سایت</button></a>`:''}${ig?`<a href="${esc(ig)}" target="_blank" rel="noopener"><button>اینستاگرام</button></a>`:''}${has?`<a href="${map}" target="_blank" rel="noopener"><button>گوگل‌مپ</button></a><a href="${nesh}" target="_blank" rel="noopener"><button>نشان</button></a>`:''}<button id="cl">بستن</button></div>`;
   $('cl').onclick=()=>$('dr').classList.remove('on');if($('cp'))$('cp').onclick=()=>navigator.clipboard.writeText(x.phone);
   $('dr').classList.add('on');
 }

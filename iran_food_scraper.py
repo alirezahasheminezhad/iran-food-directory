@@ -374,31 +374,8 @@ def merge(path):
 
 
 def export(path="iran_food_directory.xlsx"):
-    from openpyxl import Workbook
-    from openpyxl.styles import Font, PatternFill
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "همه"
-    ws.sheet_view.rightToLeft = True
-    head = ["ردیف", "نام", "گروه", "دسته", "استان", "شهر", "نشانی", "تلفن", "ساعت کار", "امتیاز", "تعداد امتیاز", "lat", "lng", "وب‌سایت", "منبع"]
-    rows = merged_rows(db)  # one row per shop, gaps filled across sources (same merge as the dashboard)
-    ws.append(head)
-    for i, r in enumerate(rows, 1):
-        ws.append([i, *r])
-    for c in ws[1]:
-        c.font, c.fill = Font(bold=True, color="FFFFFF"), PatternFill("solid", fgColor="1F4E78")
-    for col, w in zip("ABCDEFGHIJKLMNO", (6, 38, 20, 18, 18, 14, 55, 22, 40, 8, 10, 10, 10, 30, 14)):
-        ws.column_dimensions[col].width = w
-    ws.freeze_panes, ws.auto_filter.ref = "A2", ws.dimensions
-    tmp = path + ".tmp"
-    wb.save(tmp)  # write aside, then swap: an interrupted save can never destroy the old file
-    try:
-        os.replace(tmp, path)
-    except PermissionError:  # the old file is open in Excel
-        path = path.replace(".xlsx", time.strftime("_%H%M%S.xlsx"))
-        os.replace(tmp, path)
-    n_phone = sum(1 for r in rows if r[6])
-    print(f"saved {path}: {len(rows)} places, {n_phone} with phone")
+    from export_xlsx import export_xlsx
+    export_xlsx(db, path)
 
 
 def coverage():
