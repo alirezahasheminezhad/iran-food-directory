@@ -43,8 +43,9 @@ jobs:
       - name: Merge Instagram into the places DB (as source اینستاگرام)
         run: |
           [ -f iran_food.db ] || exit 0
-          [ -f instagram/data/instagram-pages.json ] || exit 0
-          python instagram_merge.py instagram/data/instagram-pages.json iran_food.db
+          PAGES="instagram/seed-pages.json"
+          [ -f instagram/data/instagram-pages.json ] && PAGES="$PAGES instagram/data/instagram-pages.json"
+          python instagram_merge.py $PAGES iran_food.db
 
       - name: Rebuild Excel + dashboard JSON
         run: |

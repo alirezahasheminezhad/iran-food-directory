@@ -60,6 +60,14 @@ jobs:
           python iran_food_scraper.py --coverage | tee coverage.txt
           { echo '### پوشش استان‌ها'; echo '```'; cat coverage.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Keep Instagram source merged (seed floor)
+        if: always()
+        run: |
+          [ -f iran_food.db ] || exit 0
+          python instagram_merge.py instagram/seed-pages.json iran_food.db
+          python export_xlsx.py iran_food.db iran_food_directory.xlsx
+          python export_json.py iran_food.db places.json
+
       - name: Save data
         if: always()
         run: |
